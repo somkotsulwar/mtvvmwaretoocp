@@ -1,0 +1,74 @@
+---
+- name: Create migration plans only from survey-selected Plan Names
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - ../vars.yaml
+
+  vars:
+    # Injected via Controller Survey
+    plan_names_from_survey: []  # Example: ["win-plan-01", "lin-plan-01"]
+
+  tasks:
+    - name: Read CSV content (base64)
+      slurp:
+        src: ../vm_list_to_migrate.csv
+      register: raw_csv
+
+    - name: Decode and split CSV into lines
+      set_fact:
+        csv_lines: "{{ raw_csv.content | b64decode | regex_findall('.*') }}"
+
+    - name: Extract CSV headers
+      set_fact:
+        csv_headers: "{{ csv_lines[0].split(',') | map('trim') | list }}"
+
+    - name: Parse each row into a dictionary
+      set_fact:
+        all_rows: "{{ all_rows | default([]) + [dict(csv_headers | zip(row.split(',') | map('trim') | list))] }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        loop_var: row
+      when: row.strip() != ''
+
+    - name: Filter rows based on selected plan names from survey
+      set_fact:
+        filtered_rows: "{{ all_rows | selectattr('Plan Name', 'in', plan_names_from_survey) | list }}"
+
+    - name: Debug - Show filtered rows (optional)
+      debug:
+        var: filtered_rows
+
+    - name: Group VMs by Plan Name
+      set_fact:
+        plans_dict: "{{ plans_dict | default({}) | combine({ item['Plan Name']: (plans_dict[item['Plan Name']] | default([])) + [item] }) }}"
+      loop: "{{ filtered_rows }}"
+      loop_control:
+        label: "{{ item['Plan Name'] }}"
+
+    - name: Construct VM objects and update plans_with_vms with is_warm flag
+      set_fact:
+        plans_with_vms: "{{ plans_with_vms | default({}) | combine({ item.key: {
+          'vms': vm_list,
+          'rows': item.value,
+          'is_warm': (item.value[0].get('Cold or Warm', '') | lower == 'warm')
+        } }) }}"
+      vars:
+        vm_list: >-
+          {%- set result = [] -%}
+          {%- for row in item.value -%}
+          {%-   set _ = result.append({ 'name': row['RHOS Name'], 'id': row['VM ID'] }) -%}
+          {%- endfor -%}
+          {{ result }}
+      loop: "{{ plans_dict | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Loop over each selected plan and create
+      include_tasks: includes/create_plan_standard.yml
+      loop: "{{ plans_with_vms | dict2items }}"
+      loop_control:
+        loop_var: plan_group
+      vars:
+        plan_group: "{{ plan_group }}"
