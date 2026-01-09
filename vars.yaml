@@ -1,0 +1,29 @@
+# vars.yaml
+
+vcenter_hostname: "{{ lookup('env', 'VCENTER_HOSTNAME') }}"
+vcenter_username: "{{ lookup('env', 'VCENTER_USERNAME') }}"
+vcenter_password: "{{ lookup('env', 'VCENTER_PASSWORD') }}"
+
+mtv_namespace: "openshift-mtv"
+source_provider_name: "vmware"
+source_provider_uid: "853a87c8-da62-48e6-9fdf-ab5f5614389a"
+
+destination_provider_name: "host"
+destination_provider_uid: "cfd1b453-2705-41b9-bb3a-85fd005c3a48"
+
+network_map_name: "test-networkmap"
+storage_map_name: "test-storagemap"
+
+source_networkmap: "CPMS-External"
+source_networkmap_id: dvportgroup-1008
+target_network_namespace: "openshift-mtv"
+
+target_networkmap: "nad"
+
+source_storagemap: "vSAN-Datastore"          # (for display or info)
+source_storagemap_id: datastore-22          # ✅ critical: used in YAML
+target_storage: lvms-vg1
+
+zabbix_url: "193.7.1.225"
+zabbix_api_user: "Admin"
+zabbix_api_pass: "zabbix"

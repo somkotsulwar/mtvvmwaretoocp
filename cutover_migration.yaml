@@ -1,0 +1,72 @@
+---
+- name: Perform Cutover for a Migration Plan if Sync Completed
+  hosts: localhost
+  gather_facts: true
+  vars:
+    plan_namespace: "openshift-mtv"  # Namespace where the plan exists
+    # plan_name: "splan-04"          # Pass this via extra-vars or survey
+
+  tasks:
+    - name: Get latest migration for the plan
+      kubernetes.core.k8s_info:
+        api_version: forklift.konveyor.io/v1beta1
+        kind: Migration
+        namespace: "{{ plan_namespace }}"
+      register: migration_info
+
+    - name: Filter migrations for the selected plan
+      set_fact:
+        matching_migrations: >-
+          {{
+            migration_info.resources
+            | selectattr('spec.plan.name', 'equalto', plan_name)
+            | sort(attribute='metadata.creationTimestamp', reverse=true)
+            | list
+          }}
+
+    - name: Set latest migration
+      set_fact:
+        last_migration: "{{ matching_migrations[0] }}"
+      when: matching_migrations | length > 0
+
+    - name: Check if all VMs are in CopyingPaused state
+      set_fact:
+        ready_for_cutover: >-
+          {{
+            (last_migration.status.vms | default([]))
+            | map(attribute='phase')
+            | list
+            | unique
+            == ['CopyingPaused']
+          }}
+      when: last_migration is defined
+
+    - name: Show cutover readiness status
+      debug:
+        msg: "Migration '{{ plan_name }}' is ready for cutover: {{ ready_for_cutover | default(false) }}"
+
+    - name: Calculate cutover timestamp with 3-min buffer
+      set_fact:
+        cutover_timestamp: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(ansible_date_time.epoch | int + 180) }}"
+      when: ready_for_cutover | default(false)
+
+    - name: Perform Cutover if ready
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: Migration
+          metadata:
+            generateName: "{{ plan_name }}-cutover-"
+            namespace: "{{ plan_namespace }}"
+          spec:
+            plan:
+              name: "{{ plan_name }}"
+              namespace: "{{ plan_namespace }}"
+            cutover: "{{ cutover_timestamp }}"
+      when: ready_for_cutover | default(false)
+
+    - name: Skip cutover if not ready
+      debug:
+        msg: "Cutover skipped — not all VMs are in 'CopyingPaused' phase."
+      when: not (ready_for_cutover | default(false))

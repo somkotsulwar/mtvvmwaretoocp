@@ -1,0 +1,58 @@
+---
+- name: Patch cutover on latest Migration associated with a Plan
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    mtv_namespace: "openshift-mtv"
+    plan_name: "{{ cutover_plan_name }}"  # 👈 Input from Survey
+
+  tasks:
+    - name: Get all Migration CRs in the namespace
+      kubernetes.core.k8s_info:
+        api_version: forklift.konveyor.io/v1beta1
+        kind: Migration
+        namespace: "{{ mtv_namespace }}"
+      register: all_migrations
+
+    - name: Filter migrations associated with the plan
+      set_fact:
+        matching_migrations: >-
+          {{
+            all_migrations.resources
+            | selectattr('spec.plan.name', 'equalto', plan_name)
+            | list
+          }}
+
+    - name: Fail if no migration found for the plan
+      fail:
+        msg: "No Migration CR found for Plan '{{ plan_name }}'"
+      when: matching_migrations | length == 0
+
+    - name: Sort matching migrations by creationTimestamp descending
+      set_fact:
+        latest_migration: >-
+          {{
+            matching_migrations
+            | sort(attribute='metadata.creationTimestamp', reverse=True)
+            | first
+          }}
+
+    - name: Calculate cutover time (UTC + 60 seconds)
+      set_fact:
+        cutover_time: "{{ lookup('pipe', 'date -u -d \"+60 seconds\" +\"%Y-%m-%dT%H:%M:%SZ\"') }}"
+
+    - name: Patch latest Migration CR with cutover time
+      kubernetes.core.k8s_json_patch:
+        kind: Migration
+        api_version: forklift.konveyor.io/v1beta1
+        name: "{{ latest_migration.metadata.name }}"
+        namespace: "{{ mtv_namespace }}"
+        patch:
+          - op: add
+            path: /spec/cutover
+            value: "{{ cutover_time }}"
+
+    - name: Show which migration was patched
+      debug:
+        msg: "Cutover patch applied to migration '{{ latest_migration.metadata.name }}' for plan '{{ plan_name }}'"

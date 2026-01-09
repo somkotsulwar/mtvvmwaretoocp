@@ -1,0 +1,61 @@
+- name: Create multiple migration plans from CSV
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - vars.yaml
+
+  tasks:
+    - name: Read CSV content (base64)
+      slurp:
+        src: r_vm_list_to_migrate.csv
+      register: raw_csv
+
+    - name: Decode and split CSV into lines
+      set_fact:
+        csv_lines: "{{ raw_csv.content | b64decode | regex_findall('.*') }}"
+
+    - name: Extract CSV headers
+      set_fact:
+        csv_headers: "{{ csv_lines[0].split(',') | map('trim') | list }}"
+
+    - name: Parse each row into a dictionary
+      set_fact:
+        all_rows: "{{ all_rows | default([]) + [dict(csv_headers | zip(row.split(',') | map('trim') | list))] }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        loop_var: row
+      when: row.strip() != ''
+
+    - name: Group VMs by Plan Name
+      set_fact:
+        plans_dict: "{{ plans_dict | default({}) | combine({ item['Plan Name']: (plans_dict[item['Plan Name']] | default([])) + [item] }) }}"
+      loop: "{{ all_rows }}"
+      loop_control:
+        label: "{{ item['Plan Name'] }}"
+
+    - name: Construct VM objects and update plans_with_vms with is_warm flag
+      set_fact:
+        plans_with_vms: "{{ plans_with_vms | default({}) | combine({ item.key: {
+          'vms': vm_list,
+          'rows': item.value,
+          'is_warm': (item.value[0]['Cold or Warm'] | lower == 'warm')
+        } }) }}"
+      vars:
+        vm_list: >-
+          {%- set result = [] -%}
+          {%- for row in item.value -%}
+          {%-   set _ = result.append({ 'name': row['RHOS Name'], 'id': row['VM ID'] }) -%}
+          {%- endfor -%}
+          {{ result }}
+      loop: "{{ plans_dict | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Loop over each plan group and create them
+      include_tasks: r_create_single_plan.yaml
+      loop: "{{ plans_with_vms | dict2items }}"
+      loop_control:
+        loop_var: plan_group
+      vars:
+        plan_group: "{{ plan_group }}"

@@ -1,0 +1,28 @@
+# vars.yaml
+
+vcenter_hostname: "{{ lookup('env', 'VCENTER_HOSTNAME') }}"
+vcenter_username: "{{ lookup('env', 'VCENTER_USERNAME') }}"
+vcenter_password: "{{ lookup('env', 'VCENTER_PASSWORD') }}"
+
+mtv_namespace: "openshift-mtv"
+source_provider_name: "vmware"
+destination_provider_name: "host"
+
+selected_vm_id: "vm-30730"
+selected_vm_name: "rhel-8"
+
+network_map_name: "test-networkmap"
+storage_map_name: "test-storagemap"
+plan_name: "{{ selected_vm_name }}-vmware-test"
+
+source_networkmap: "CPMS-External"
+source_networkmap_id: dvportgroup-1008
+target_network_namespace: "default"
+target_networkmap: "nad"
+
+source_storagemap: "vSAN-Datastore"          # (for display or info)
+source_storagemap_id: datastore-22          # ✅ critical: used in YAML
+target_storage: lvms-vg1
+
+#source_storagemap: "vSAN-Datastore"
+#target_storagemap: "lvms-vg1"

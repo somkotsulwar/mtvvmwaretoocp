@@ -1,0 +1,50 @@
+---
+- name: Send dummy data to Zabbix API
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    zabbix_api_url: "http://193.7.1.225/zabbix/api_jsonrpc.php"
+    zabbix_user: "Admin"
+    zabbix_password: "zabbix"
+    zabbix_host: "Migration Automation"
+    dummy_key: "ansible.migration.status"
+    dummy_value: "cutover_started"
+
+  tasks:
+    - name: Login to Zabbix API
+      community.zabbix.zabbix_api:
+        server_url: "{{ zabbix_api_url }}"
+        login_user: "{{ zabbix_user }}"
+        login_password: "{{ zabbix_password }}"
+        method: user.login
+        params: {}
+      register: login_response
+
+    - name: Set auth token
+      set_fact:
+        zabbix_auth_token: "{{ login_response.result }}"
+
+    - name: Send data using item.update or event.create
+      uri:
+        url: "{{ zabbix_api_url }}"
+        method: POST
+        body_format: json
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {
+            "jsonrpc": "2.0",
+            "method": "event.acknowledge",
+            "params": {
+              "eventids": ["12345"],
+              "message": "Migration Cutover Started by Ansible"
+            },
+            "auth": "{{ zabbix_auth_token }}",
+            "id": 1
+          }
+      register: result
+
+    - name: Show result
+      debug:
+        var: result.json

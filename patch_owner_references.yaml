@@ -1,0 +1,70 @@
+# patch_owner_references.yaml
+
+- name: Get plan info (to fetch UID)
+  kubernetes.core.k8s_info:
+    api_version: forklift.konveyor.io/v1beta1
+    kind: Plan
+    name: "{{ plan_name }}"
+    namespace: "{{ target_namespace }}"
+  register: plan_info
+  retries: 10
+  delay: 5
+  until: >
+    plan_info.resources[0].status.conditions is defined and
+    (
+      plan_info.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list | length
+    ) > 0
+  failed_when: plan_info.resources | length == 0
+
+- name: Debug Plan Info to confirm UID
+  debug:
+    var: plan_info.resources[0].metadata.uid
+
+# Step 11: Add ownerReferences to the Maps using apply
+- name: Set Plan UID
+  set_fact:
+    plan_uid: "{{ plan_info.resources[0].metadata.uid }}"
+
+- name: Fail if Plan UID is not set
+  fail:
+    msg: "Plan UID could not be retrieved!"
+  when: plan_uid == ''
+
+- name: Patch NetworkMap with ownerReferences
+  kubernetes.core.k8s:
+    apply: true
+    force: true
+    definition:
+      apiVersion: forklift.konveyor.io/v1beta1
+      kind: NetworkMap
+      metadata:
+        name: "{{ network_map_name }}"
+        namespace: "{{ target_namespace }}"
+        ownerReferences:
+          - apiVersion: forklift.konveyor.io/v1beta1
+            kind: Plan
+            name: "{{ plan_name }}"
+            uid: "{{ plan_uid }}"
+            controller: true
+            blockOwnerDeletion: true
+
+- name: Patch StorageMap with ownerReferences
+  kubernetes.core.k8s:
+    apply: true
+    force: true
+    definition:
+      apiVersion: forklift.konveyor.io/v1beta1
+      kind: StorageMap
+      metadata:
+        name: "{{ storage_map_name }}"
+        namespace: "{{ target_namespace }}"
+        ownerReferences:
+          - apiVersion: forklift.konveyor.io/v1beta1
+            kind: Plan
+            name: "{{ plan_name }}"
+            uid: "{{ plan_uid }}"
+            controller: true
+            blockOwnerDeletion: true

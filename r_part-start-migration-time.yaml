@@ -1,0 +1,22 @@
+- name: Poll until sync time reached
+  command: date -u +%Y-%m-%dT%H:%M:%S
+  register: current_time_cmd
+  until: (current_time_cmd.stdout | to_datetime('%Y-%m-%dT%H:%M:%S')) >= (item['Sync Time'] | to_datetime('%Y-%m-%d %H:%M:%S'))
+  retries: 30
+  delay: 15
+  vars:
+    csv_file: "vm_list_to_migrate.csv"
+    mtv_namespace: "openshift-mtv"
+- name: Start Migration Plan after sync time reached
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: forklift.konveyor.io/v1beta1
+      kind: Migration
+      metadata:
+        generateName: "{{ item['Plan Name'] }}-migration-"
+        namespace: "{{ mtv_namespace }}"
+      spec:
+        plan:
+          name: "{{ item['Plan Name'] }}"
+          namespace: "{{ mtv_namespace }}"

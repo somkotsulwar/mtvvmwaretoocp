@@ -1,0 +1,209 @@
+- name: VM Migration Plan with manual CSV parsing (AAP compatible)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars.yaml  # External vars like plan_name, mtv_namespace, etc.
+
+  tasks:
+    # Step 1: Read CSV content (base64)
+    - name: Read CSV content (base64)
+      slurp:
+        src: migration_plan.csv
+      register: raw_csv
+
+    # Step 2: Decode and split CSV into lines
+    - name: Decode and split CSV into lines
+      set_fact:
+        csv_lines: "{{ raw_csv.content | b64decode | regex_findall('.*') }}"
+
+    # Step 3: Extract CSV headers
+    - name: Extract CSV headers
+      set_fact:
+        csv_headers: "{{ csv_lines[0].split(',') | map('trim') | list }}"
+
+    # Step 4: Initialize empty migration_data list
+    - name: Initialize empty migration_data list
+      set_fact:
+        migration_data: []
+
+    # Step 5: Convert each CSV row to dictionary and append to migration_data
+    - name: Convert each CSV row to dictionary and append to migration_data
+      set_fact:
+        migration_data: "{{ migration_data + [dict(csv_headers | zip(row | split(',') | map('trim') | list))] }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        loop_var: row
+      when: row.strip() != ''
+
+    # Step 6: Group VMs by Plan Name
+    - name: Group VMs by Plan Name
+      set_fact:
+        vms_by_plan: "{{ migration_data | groupby('Plan Name') }}"
+
+    # Step 7: Create NetworkMap for each Plan
+    - name: Create NetworkMap for each Plan
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: NetworkMap
+          metadata:
+            name: "{{ network_map_name }}-{{ item.0 }}"
+            namespace: "{{ mtv_namespace }}"
+          spec:
+            provider:
+              source:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ source_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+              destination:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ destination_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+            map:
+              - destination:
+                  name: "{{ target_networkmap }}"
+                  namespace: "{{ target_network_namespace }}"
+                  type: "multus"
+                source:
+                  id: "{{ source_networkmap_id }}"
+      loop: "{{ vms_by_plan }}"
+      loop_control:
+        loop_var: item
+
+    # Step 8: Create StorageMap for each Plan
+    - name: Create StorageMap for each Plan
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: StorageMap
+          metadata:
+            name: "{{ storage_map_name }}-{{ item.0 }}"
+            namespace: "{{ mtv_namespace }}"
+          spec:
+            provider:
+              source:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ source_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+              destination:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ destination_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+            map:
+              - source:
+                  type: vmware
+                  name: "{{ source_storagemap }}"
+                destination:
+                  storageClass: "{{ target_storagemap }}"
+      loop: "{{ vms_by_plan }}"
+      loop_control:
+        loop_var: item
+
+    # Step 9: Create Forklift Migration Plan for each Plan
+    - name: Create Forklift Migration Plan for each Plan
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: Plan
+          metadata:
+            name: "{{ item.0 }}"
+            namespace: "{{ mtv_namespace }}"
+          spec:
+            provider:
+              source:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ source_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+              destination:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: Provider
+                name: "{{ destination_provider_name }}"
+                namespace: "{{ mtv_namespace }}"
+            map:
+              network:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: NetworkMap
+                name: "{{ network_map_name }}-{{ item.0 }}"
+                namespace: "{{ mtv_namespace }}"
+              storage:
+                apiVersion: forklift.konveyor.io/v1beta1
+                kind: StorageMap
+                name: "{{ storage_map_name }}-{{ item.0 }}"
+                namespace: "{{ mtv_namespace }}"
+            namespace: "{{ mtv_namespace }}"
+            targetNamespace: "{{ mtv_namespace }}"
+            vms:
+              - "{{ item.1 | map(attribute='RHOS Name') | map('regex_replace', '^(.+)$', '\\1') | list }}"
+            warm: true
+            preserveStaticIPs: true
+      loop: "{{ vms_by_plan }}"
+      loop_control:
+        loop_var: item
+
+    # Step 10: Wait for Migration Plan to become Ready
+    - name: Wait for migration plan to become Ready
+      register: plan_info
+      retries: 5
+      delay: 3
+      until: >
+        plan_info.resources[0].status.conditions is defined and
+        (
+          plan_info.resources[0].status.conditions
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True')
+          | list | length
+        ) > 0
+      failed_when: plan_info.resources | length == 0
+      delegate_to: localhost
+      kubernetes.core.k8s_info:
+        api_version: forklift.konveyor.io/v1beta1
+        kind: Plan
+        name: "{{ plan_name }}"
+        namespace: "{{ mtv_namespace }}"
+
+    # Step 11: Add ownerReferences to the Maps (Optional Cleanup Logic)
+    - name: Set Plan UID
+      set_fact:
+        plan_uid: "{{ plan_info.resources[0].metadata.uid }}"
+
+    - name: Patch NetworkMap with ownerReferences
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: NetworkMap
+          metadata:
+            name: "{{ network_map_name }}-{{ plan_name }}"
+            namespace: "{{ mtv_namespace }}"
+            ownerReferences:
+              - apiVersion: forklift.konveyor.io/v1beta1
+                kind: Plan
+                name: "{{ plan_name }}"
+                uid: "{{ plan_uid }}"
+                controller: true
+                blockOwnerDeletion: true
+
+    - name: Patch StorageMap with ownerReferences
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: forklift.konveyor.io/v1beta1
+          kind: StorageMap
+          metadata:
+            name: "{{ storage_map_name }}-{{ plan_name }}"
+            namespace: "{{ mtv_namespace }}"
+            ownerReferences:
+              - apiVersion: forklift.konveyor.io/v1beta1
+                kind: Plan
+                name: "{{ plan_name }}"
+                uid: "{{ plan_uid }}"
+                controller: true
+                blockOwnerDeletion: true

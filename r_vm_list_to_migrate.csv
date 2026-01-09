@@ -1,0 +1,2 @@
+Original Order,RHOS Name,VM ID,ASMS,GM Cutover Sequence,Sub Group,Environment,OS,Plan Name,Target Namespace,Target Storage,Cold or Warm,Keep IP,Sync Time 
+1,rhel-9,vm-30730,1,group-1,1,prod,Ubuntu Linux (64-bit),hookstest3,linux-ns30,lvms-vg1,warm,yes,2025-07-17 15:37:00
