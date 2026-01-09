@@ -1,0 +1,62 @@
+---
+- name: Create warm migration plans from CSV
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - ../vars.yaml
+
+  tasks:
+    - name: Read CSV content (base64)
+      slurp:
+        src: ../vm_list_to_migrate.csv
+      register: raw_csv
+
+    - name: Decode and split CSV into lines
+      set_fact:
+        csv_lines: "{{ raw_csv.content | b64decode | regex_findall('.*') }}"
+
+    - name: Extract CSV headers
+      set_fact:
+        csv_headers: "{{ csv_lines[0].split(',') | map('trim') | list }}"
+
+    - name: Parse each row into a dictionary
+      set_fact:
+        all_rows: "{{ all_rows | default([]) + [dict(csv_headers | zip(row.split(',') | map('trim') | list))] }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        loop_var: row
+      when: row.strip() != ''
+
+    - name: Filter only warm migration rows
+      set_fact:
+        warm_rows: "{{ all_rows | selectattr('Cold or Warm', 'equalto', 'warm') | list }}"
+
+    - name: Group warm VMs by Plan Name
+      set_fact:
+        warm_plans_dict: "{{ warm_plans_dict | default({}) | combine({ item['Plan Name']: (warm_plans_dict[item['Plan Name']] | default([])) + [item] }) }}"
+      loop: "{{ warm_rows }}"
+      loop_control:
+        label: "{{ item['Plan Name'] }}"
+
+    - name: Format warm plans structure with vms and rows
+      set_fact:
+        plans_with_vms: "{{ plans_with_vms | default({}) | combine({ item.key: { 'rows': item.value, 'vms': vm_list, 'is_warm': true } }) }}"
+      vars:
+        vm_list: >-
+          {%- set result = [] -%}
+          {%- for row in item.value -%}
+          {%-   set _ = result.append({ 'name': row['RHOS Name'], 'id': row['VM ID'] }) -%}
+          {%- endfor -%}
+          {{ result }}
+      loop: "{{ warm_plans_dict | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Loop over warm plans and create them
+      include_tasks: includes/create_plan_standard.yml
+      loop: "{{ plans_with_vms | dict2items }}"
+      loop_control:
+        loop_var: plan_group
+      vars:
+        plan_group: "{{ plan_group }}"

@@ -1,0 +1,82 @@
+---
+- name: Create migration plans without preserved IPs
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - ../vars.yaml
+
+  tasks:
+    - name: Read CSV content (base64)
+      slurp:
+        src: ../vm_list_to_migrate.csv
+      register: raw_csv
+
+    - name: Decode and split CSV into lines
+      set_fact:
+        csv_lines: "{{ raw_csv.content | b64decode | regex_findall('.*') }}"
+
+    - name: Extract CSV headers
+      set_fact:
+        csv_headers: "{{ csv_lines[0].split(',') | map('trim') | list }}"
+
+    - name: Parse each row into a dictionary
+      set_fact:
+        all_rows: "{{ all_rows | default([]) + [dict(csv_headers | zip(row.split(',') | map('trim') | list))] }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        loop_var: row
+      when: row.strip() != ''
+
+    - name: Filter rows where Keep IP is No (simple case-insensitive)
+      set_fact:
+        no_ip_rows: >-
+          {{
+            all_rows
+            | selectattr('Keep IP', 'lower') 
+            | selectattr('Keep IP', 'equalto', 'no')
+            | list
+          }}
+
+    - name: Debug - Print filtered no IP rows (optional)
+      debug:
+        var: no_ip_rows
+
+    - name: Group no-IP VMs by Plan Name
+      set_fact:
+        plans_dict: "{{ plans_dict | default({}) | combine({ item['Plan Name']: (plans_dict[item['Plan Name']] | default([])) + [item] }) }}"
+      loop: "{{ no_ip_rows }}"
+      loop_control:
+        label: "{{ item['Plan Name'] }}"
+
+    - name: Initialize plans_with_vms
+      set_fact:
+        plans_with_vms: {}
+
+    - name: Append each VM to corresponding plan.vms
+      set_fact:
+        plans_with_vms: >-
+          {{
+            plans_with_vms | combine({
+              item['Plan Name']: {
+                'rows': (plans_with_vms[item['Plan Name']].rows | default([])) + [item],
+                'vms': (plans_with_vms[item['Plan Name']].vms | default([])) + [
+                  {
+                    'name': item['RHOS Name'],
+                    'id': item['VM ID']
+                  }
+                ]
+              }
+            }, recursive=True)
+          }}
+      loop: "{{ no_ip_rows }}"
+      loop_control:
+        label: "{{ item['Plan Name'] }}"
+
+    - name: Loop over each plan group and create plans without preserved IPs
+      include_tasks: includes/create_plan_no_ip.yml
+      loop: "{{ plans_with_vms | dict2items }}"
+      loop_control:
+        loop_var: plan_group
+      vars:
+        plan_group: "{{ plan_group }}"
